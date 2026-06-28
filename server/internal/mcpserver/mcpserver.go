@@ -222,11 +222,12 @@ var tavilySearchInputSchema = map[string]any{
 			"description": "Controls relevance vs latency and how results[].content is generated. basic: balanced, 1 summary per URL (1 credit). fast: lower latency, multiple snippets per URL (1 credit). ultra-fast: lowest latency, 1 summary per URL (1 credit). advanced: highest relevance, multiple snippets per URL (2 credits).",
 		},
 		"chunks_per_source": map[string]any{
-			"type":        "integer",
-			"minimum":     1,
-			"maximum":     3,
-			"default":     3,
 			"description": "Max number of relevant chunks (each up to ~500 chars) to return per source. Used with search_depth=advanced.",
+			"default":     3,
+			"oneOf": []any{
+				map[string]any{"type": "integer", "minimum": 1, "maximum": 5},
+				map[string]any{"type": "string", "enum": []string{"auto"}},
+			},
 		},
 		"max_results": map[string]any{
 			"type":        "integer",
@@ -327,7 +328,7 @@ var tavilyExtractInputSchema = map[string]any{
 		},
 		"format": map[string]any{
 			"type":        "string",
-			"enum":        []string{"markdown", "text"},
+			"enum":        []string{"markdown", "text", "html_tags"},
 			"default":     "markdown",
 			"description": "Output format for extracted content.",
 		},
@@ -365,6 +366,10 @@ var tavilyExtractInputSchema = map[string]any{
 			"type":        "string",
 			"description": "Prioritize content from a specific country (lowercase plain English).",
 		},
+		"query": map[string]any{
+			"type":        "string",
+			"description": "Query to rerank content chunks by relevance (extract endpoint).",
+		},
 	},
 }
 
@@ -397,6 +402,7 @@ var tavilyMapInputSchema = map[string]any{
 		"limit": map[string]any{
 			"type":        "integer",
 			"minimum":     1,
+			"maximum":     1000,
 			"default":     50,
 			"description": "Total number of links to process.",
 		},
@@ -484,6 +490,7 @@ var tavilyCrawlInputSchema = map[string]any{
 		"limit": map[string]any{
 			"type":        "integer",
 			"minimum":     1,
+			"maximum":     1000,
 			"default":     50,
 			"description": "Total number of pages to process.",
 		},
@@ -701,8 +708,8 @@ var tavilyResearchInputSchema = map[string]any{
 		},
 		"citation_format": map[string]any{
 			"type":        "string",
-			"enum":        []string{"numbered", "markdown", "json", "none"},
-			"default":     "markdown",
+			"enum":        []string{"numbered", "mla", "apa", "chicago"},
+			"default":     "numbered",
 		},
 		"include_domains": map[string]any{
 			"type":     "array",
@@ -716,8 +723,8 @@ var tavilyResearchInputSchema = map[string]any{
 		},
 		"output_length": map[string]any{
 			"type":        "string",
-			"enum":        []string{"low", "medium", "high"},
-			"default":     "medium",
+			"enum":        []string{"short", "standard", "long"},
+			"default":     "standard",
 		},
 		"files": map[string]any{
 			"type":        "object",

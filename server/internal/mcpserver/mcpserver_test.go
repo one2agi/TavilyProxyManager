@@ -492,6 +492,184 @@ func TestTavilyResearch_StaysOnSameKey(t *testing.T) {
 	}
 }
 
+// TestMCP_SchemasMatchTavilyUpstream guards TavilyProxy's inputSchema against
+// drift from Tavily's real API. Every enum/constraint below was verified by
+// direct probing of https://api.tavily.com (each bad value triggered 400
+// naming the legal set; each good value succeeded). We use the real API as
+// ground truth — not Tavily's official MCP v0.2.20 schema, which is a
+// conservative subset that omits fields like output_length, citation_format,
+// chunks_per_source, html_tags, d/w/m/y time_range shortcuts, and news/finance
+// topics that Tavily API does accept.
+//
+// If Tavily adds/removes a value, this test fails and the ground-truth list
+// here must be updated.
+func TestMCP_SchemasMatchTavilyUpstream(t *testing.T) {
+	t.Parallel()
+
+	// tool.field -> expected enum values (unsorted — order doesn't matter,
+	// we compare as sets).
+	expectedEnums := map[string][]string{
+		// research
+		"research.model":           {"mini", "pro", "auto"},
+		"research.output_length":   {"short", "standard", "long"},
+		"research.citation_format": {"numbered", "mla", "apa", "chicago"},
+		// search
+		"search.search_depth": {"basic", "advanced", "fast", "ultra-fast"},
+		"search.topic":        {"general", "news", "finance"},
+		"search.time_range":   {"day", "week", "month", "year", "d", "w", "m", "y"},
+		// extract
+		"extract.extract_depth": {"basic", "advanced"},
+		"extract.format":        {"markdown", "text", "html_tags"},
+		// crawl
+		"crawl.extract_depth": {"basic", "advanced"},
+		"crawl.format":        {"markdown", "text"},
+		// map
+		"map.extract_depth": {"basic", "advanced"},
+		"map.format":        {"markdown", "text"},
+	}
+
+	// tool.field -> expected constraints on integer fields.
+	// We only assert maximum when Tavily officially publishes one; otherwise
+	// we skip (caller can pass any value Tavily accepts).
+	expectedIntMax := map[string]int{
+		"crawl.limit": 1000,
+		"map.limit":   1000,
+	}
+
+	schemas := map[string]map[string]any{
+		"research": tavilyResearchInputSchema,
+		"search":   tavilySearchInputSchema,
+		"extract":  tavilyExtractInputSchema,
+		"crawl":    tavilyCrawlInputSchema,
+		"map":      tavilyMapInputSchema,
+	}
+
+	for key, want := range expectedEnums {
+		parts := strings.SplitN(key, ".", 2)
+		if len(parts) != 2 {
+			t.Fatalf("bad key %q", key)
+		}
+		tool, field := parts[0], parts[1]
+		schema, ok := schemas[tool]
+		if !ok {
+			t.Fatalf("unknown tool %q in key %q", tool, key)
+		}
+		props, _ := schema["properties"].(map[string]any)
+		fieldSchema, ok := props[field].(map[string]any)
+		if !ok {
+			t.Errorf("%s: field missing from schema", key)
+			continue
+		}
+		// chunks_per_source uses oneOf (integer OR "auto"); recurse into the
+		// integer branch's max and assert the string branch's enum.
+		if field == "chunks_per_source" {
+			oneOf, _ := fieldSchema["oneOf"].([]any)
+			if len(oneOf) != 2 {
+				t.Errorf("%s: oneOf must have 2 branches, got %d", key, len(oneOf))
+				continue
+			}
+			intBranch, _ := oneOf[0].(map[string]any)
+			strBranch, _ := oneOf[1].(map[string]any)
+			if intBranch["type"] != "integer" {
+				t.Errorf("%s: oneOf[0] must be integer, got %v", key, intBranch["type"])
+			}
+			if intBranch["maximum"] != 5 {
+				t.Errorf("%s: oneOf[0].maximum = %v, want 5 (Tavily accepts 1-5)", key, intBranch["maximum"])
+			}
+			if intBranch["minimum"] != 1 {
+				t.Errorf("%s: oneOf[0].minimum = %v, want 1", key, intBranch["minimum"])
+			}
+			strEnum, _ := strBranch["enum"].([]any)
+			if len(strEnum) != 1 || strEnum[0] != "auto" {
+				t.Errorf("%s: oneOf[1].enum = %v, want [\"auto\"]", key, strEnum)
+			}
+			continue
+		}
+		gotEnum := asStringSlice(t, fieldSchema["enum"])
+		if len(gotEnum) == 0 {
+			t.Errorf("%s: no enum on field; fieldSchema = %+v", key, fieldSchema)
+			continue
+		}
+		gotSet := map[string]bool{}
+		for _, v := range gotEnum {
+			gotSet[v] = true
+		}
+		for _, w := range want {
+			if !gotSet[w] {
+				t.Errorf("%s: enum missing %q (got %v, want superset of %v)", key, w, gotEnum, want)
+			}
+		}
+		// Guard against extra undocumented values: every enum entry must be in
+		// the expected set. Otherwise we ship values Tavily will 400.
+		for s := range gotSet {
+			found := false
+			for _, w := range want {
+				if s == w {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: enum has undocumented value %q (got %v, allowed = %v)", key, s, gotEnum, want)
+			}
+		}
+	}
+
+	for key, wantMax := range expectedIntMax {
+		parts := strings.SplitN(key, ".", 2)
+		tool, field := parts[0], parts[1]
+		schema := schemas[tool]
+		props, _ := schema["properties"].(map[string]any)
+		fieldSchema, _ := props[field].(map[string]any)
+		if fieldSchema == nil {
+			t.Errorf("%s: field missing", key)
+			continue
+		}
+		gotMax, ok := fieldSchema["maximum"]
+		if !ok {
+			t.Errorf("%s: missing maximum constraint (Tavily caps at %d)", key, wantMax)
+			continue
+		}
+		// JSON unmarshals numbers as float64; Go literals stay int.
+		var gotMaxInt int
+		switch v := gotMax.(type) {
+		case int:
+			gotMaxInt = v
+		case float64:
+			gotMaxInt = int(v)
+		default:
+			t.Errorf("%s: maximum has unexpected type %T", key, gotMax)
+			continue
+		}
+		if gotMaxInt != wantMax {
+			t.Errorf("%s: maximum = %d, want %d", key, gotMaxInt, wantMax)
+		}
+	}
+}
+
+// asStringSlice normalises either a []string or []any of strings into []string,
+// since the schema variables are declared with []string but arrive here as
+// interface{} values.
+func asStringSlice(t *testing.T, v any) []string {
+	t.Helper()
+	switch s := v.(type) {
+	case []string:
+		return s
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, x := range s {
+			str, ok := x.(string)
+			if !ok {
+				t.Fatalf("enum contains non-string %v (%T)", x, x)
+			}
+			out = append(out, str)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 type authRoundTripper struct {
 	base  http.RoundTripper
 	token string
