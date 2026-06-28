@@ -53,6 +53,12 @@ func NewHandler(deps Dependencies) http.Handler {
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
 	})
 
+	addResearchTool(server, deps.Proxy, &mcp.Tool{
+		Name:        "tavily-research",
+		Description: "Execute a comprehensive research task via Tavily Research API. Internally creates a task and polls until completion or 5-minute timeout. Returns a structured report with sources.",
+		InputSchema: tavilyResearchInputSchema,
+	})
+
 	base := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
 		return server
 	}, &mcp.StreamableHTTPOptions{
@@ -536,6 +542,119 @@ var tavilyCrawlInputSchema = map[string]any{
 	},
 }
 
+const (
+	researchPollInterval = 2 * time.Second
+	researchMaxWait      = 5 * time.Minute
+)
+
+func addResearchTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.Tool) {
+	server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		body, _ := json.Marshal(req.Params.Arguments)
+
+		// 1. POST /research
+		headers := make(http.Header)
+		headers.Set("Content-Type", "application/json")
+
+		resp, err := proxy.Do(ctx, services.ProxyRequest{
+			Method:      http.MethodPost,
+			Path:        "/research",
+			Headers:     headers,
+			Body:        body,
+			ClientIP:    "mcp",
+			ContentType: "application/json",
+		})
+		if err != nil {
+			return toolError(err.Error()), nil
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return toolError(fmt.Sprintf("upstream status %d: %s", resp.StatusCode, string(resp.Body))), nil
+		}
+
+		// 2. Extract task_id and initial status
+		var initial struct {
+			RequestID string `json:"request_id"`
+			Status    string `json:"status"`
+		}
+		if err := json.Unmarshal(resp.Body, &initial); err != nil {
+			return toolError(fmt.Sprintf("decode create response: %v", err)), nil
+		}
+		if initial.RequestID == "" {
+			return toolError("upstream returned empty request_id"), nil
+		}
+		if initial.Status == "completed" || initial.Status == "failed" {
+			return toolResultBytes(resp.Body), nil
+		}
+
+		// 3. Poll GET /research/{id}
+		deadline := time.Now().Add(researchMaxWait)
+		pollPath := "/research/" + initial.RequestID
+		for {
+			timer := time.NewTimer(researchPollInterval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return toolError(fmt.Sprintf("client canceled: %v", ctx.Err())), nil
+			case <-timer.C:
+			}
+			if time.Now().After(deadline) {
+				return toolError(fmt.Sprintf("research timeout after %s, last status: pending", researchMaxWait)), nil
+			}
+
+			getResp, err := proxy.Do(ctx, services.ProxyRequest{
+				Method:   http.MethodGet,
+				Path:     pollPath,
+				Headers:  make(http.Header),
+				ClientIP: "mcp",
+			})
+			if err != nil {
+				// Network error: continue polling until deadline
+				continue
+			}
+			if getResp.StatusCode < 200 || getResp.StatusCode >= 300 {
+				// 5xx: continue polling. 4xx: abort.
+				if getResp.StatusCode < 500 {
+					return toolError(fmt.Sprintf("poll failed: %d %s", getResp.StatusCode, string(getResp.Body))), nil
+				}
+				continue
+			}
+
+			var status struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(getResp.Body, &status); err != nil {
+				continue
+			}
+			switch status.Status {
+			case "completed":
+				return toolResultBytes(getResp.Body), nil
+			case "failed":
+				return toolError(fmt.Sprintf("research task failed: %s", string(getResp.Body))), nil
+			}
+			// status still "pending" or "running": continue
+		}
+	})
+}
+
+func toolError(msg string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
+	}
+}
+
+func toolResultBytes(body []byte) *mcp.CallToolResult {
+	var parsed any
+	_ = json.Unmarshal(body, &parsed)
+	structured, _ := parsed.(map[string]any)
+	if structured == nil {
+		structured = map[string]any{"raw": string(body)}
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(body)}},
+		StructuredContent: structured,
+	}
+}
+
 func parseBearerToken(authHeader string) string {
 	if authHeader == "" {
 		return ""
@@ -548,4 +667,55 @@ func parseBearerToken(authHeader string) string {
 		return ""
 	}
 	return strings.TrimSpace(parts[1])
+}
+
+var tavilyResearchInputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": true,
+	"required":             []string{"input"},
+	"properties": map[string]any{
+		"input": map[string]any{
+			"type":        "string",
+			"description": "The research task or question to investigate.",
+		},
+		"model": map[string]any{
+			"type":        "string",
+			"enum":        []string{"mini", "pro", "auto"},
+			"default":     "auto",
+			"description": "mini: targeted/efficient; pro: comprehensive/multi-angle; auto: let Tavily pick.",
+		},
+		"stream": map[string]any{
+			"type":        "boolean",
+			"default":     false,
+			"description": "Whether to stream results. Currently unused by proxy (always polled).",
+		},
+		"output_schema": map[string]any{
+			"type":        "object",
+			"description": "Optional JSON schema for structured output.",
+		},
+		"citation_format": map[string]any{
+			"type":        "string",
+			"enum":        []string{"numbered", "markdown", "json", "none"},
+			"default":     "markdown",
+		},
+		"include_domains": map[string]any{
+			"type":     "array",
+			"items":    map[string]any{"type": "string"},
+			"maxItems": 300,
+		},
+		"exclude_domains": map[string]any{
+			"type":     "array",
+			"items":    map[string]any{"type": "string"},
+			"maxItems": 150,
+		},
+		"output_length": map[string]any{
+			"type":        "string",
+			"enum":        []string{"low", "medium", "high"},
+			"default":     "medium",
+		},
+		"files": map[string]any{
+			"type":        "object",
+			"description": "Optional file references; opaque to proxy.",
+		},
+	},
 }
