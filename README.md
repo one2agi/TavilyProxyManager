@@ -2,7 +2,7 @@
 
 简体中文 | [English](./README_EN.md)
 
-一个为多 AI Agent 提供共享 Tavily Key 池的反向代理 —— **部署一次,5 个 agent 共享 N 把 Tavily Key,自动轮换 + 故障转移**。
+一个为多 AI Agent 提供共享 Tavily Key 池的反向代理 —— **部署一次,多个 agent 共享 N 把 Tavily Key,自动轮换 + 故障转移**。
 
 ---
 
@@ -58,7 +58,7 @@
    │Agent4│───────┤  单一 Master Key        │
    └──────┘       │  自动轮换 + failover    │
    ┌──────┐       │                         │
-   │Agent5│───────┤                         │
+   │ Agent…│──────┤  (N 个 agent 并发)      │
    └──────┘       └─────────────────────────┘
 ```
 
