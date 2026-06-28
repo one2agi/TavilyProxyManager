@@ -61,6 +61,7 @@ type KeyUpdate struct {
 	TotalQuota *int    `json:"total_quota"`
 	UsedQuota  *int    `json:"used_quota"`
 	IsActive   *bool   `json:"is_active"`
+	IsInvalid  *bool   `json:"is_invalid"`
 	ResetQuota bool    `json:"reset_quota"`
 	SyncUsage  bool    `json:"sync_usage"`
 }
@@ -80,11 +81,10 @@ func (s *KeyService) Update(ctx context.Context, id uint, upd KeyUpdate) (*model
 		key.UsedQuota = *upd.UsedQuota
 	}
 	if upd.IsActive != nil {
-		if key.IsInvalid && *upd.IsActive {
-			key.IsActive = false
-		} else {
-			key.IsActive = *upd.IsActive
-		}
+		key.IsActive = *upd.IsActive
+	}
+	if upd.IsInvalid != nil {
+		key.IsInvalid = *upd.IsInvalid
 	}
 	if upd.ResetQuota {
 		key.UsedQuota = 0
