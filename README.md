@@ -23,6 +23,10 @@
   - 遇到 `401` / `429` / `432` / `433` 自动 failover 到下一把 Key。
 - **可视化管理面板**(Vite + Vue 3 + Naive UI):
   - Key 管理、用量统计、请求日志、自动化任务(月度重置 + 日志清理)。
+- **搜索结果缓存**(SQLite):
+  - 对 `POST /search` 响应按 `query + search_depth + topic + max_results + include/exclude_domains` 6 字段 SHA256 缓存。
+  - 命中后直接读 DB,**0 credit,响应 ~20ms(对比真实 Tavily ~1-2s,加速 50-100x)**。
+  - 适合多 agent 共享场景:同一 query 第二次起自动命中,大幅省 credits。
 - **Go 单文件二进制**,Docker 部署即开即用。
 
 ---
@@ -187,7 +191,7 @@ curl -X POST "http://localhost:8080/search" \
 
 | 工具 | 能力 | 关键参数 |
 |---|---|---|
-| `tavily-search` | 实时 Web 搜索 | `query`, `search_depth`, `topic`, `max_results`, `time_range`, `chunks_per_source` |
+| `tavily-search` | 实时 Web 搜索(**支持缓存**) | `query`, `search_depth`, `topic`, `max_results`, `time_range`, `chunks_per_source` |
 | `tavily-extract` | 提取 URL 内容 | `urls[]`, `extract_depth`, `format` (markdown/text/html_tags), `query` (rerank) |
 | `tavily-crawl` | 整站爬取 | `url`, `max_depth` (1-5), `max_breadth`, `limit` (≤1000) |
 | `tavily-map` | 网站结构地图 | `url`, `max_depth`, `max_breadth`, `limit` (≤1000) |
@@ -232,6 +236,8 @@ openclaw mcp set tavily-pool '{"url":"https://your-host/mcp","transport":"stream
 | `MCP_STATELESS` | MCP 无状态模式(避免 `session not found`) | `true` |
 | `MCP_SESSION_TTL` | MCP 会话空闲超时 | `10m` |
 | `LOG_DIR` | 文件日志目录(留空 = 只 stdout) | (空) |
+| `cache_enabled` | 启用搜索响应缓存(管理面板"设置"页可改) | `true` |
+| `cache_ttl_seconds` | 缓存条目过期时间(秒) | `43200` (12h) |
 
 ---
 

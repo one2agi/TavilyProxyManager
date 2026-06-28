@@ -23,6 +23,10 @@ A reverse proxy for the Tavily API designed for **multi-agent shared Tavily key 
   - Automatic failover on `401` / `429` / `432` / `433`.
 - **Built-in dashboard** (Vite + Vue 3 + Naive UI):
   - Key management, usage charts, request logs, monthly auto-reset, log cleanup cron.
+- **Search response cache** (SQLite):
+  - Caches `POST /search` responses keyed on SHA256 of 6 fields: `query + search_depth + topic + max_results + include/exclude_domains`.
+  - Cache hit → DB read, **0 credits, ~20ms response** (vs ~1-2s real Tavily, 50-100× speedup).
+  - Ideal for multi-agent: identical queries from any agent hit cache after the first, slashing Tavily credit usage.
 - **Single Go binary**, Docker-ready.
 
 ---
@@ -187,7 +191,7 @@ curl -X POST "http://localhost:8080/search" \
 
 | Tool | Capability | Key Parameters |
 |---|---|---|
-| `tavily-search` | Real-time web search | `query`, `search_depth`, `topic`, `max_results`, `time_range`, `chunks_per_source` |
+| `tavily-search` | Real-time web search (**with cache**) | `query`, `search_depth`, `topic`, `max_results`, `time_range`, `chunks_per_source` |
 | `tavily-extract` | Extract clean content from URLs | `urls[]`, `extract_depth`, `format` (markdown/text/html_tags), `query` (rerank) |
 | `tavily-crawl` | Crawl an entire site | `url`, `max_depth` (1-5), `max_breadth`, `limit` (≤1000) |
 | `tavily-map` | Map site structure | `url`, `max_depth`, `max_breadth`, `limit` (≤1000) |
@@ -232,6 +236,8 @@ openclaw mcp set tavily-pool '{"url":"https://your-host/mcp","transport":"stream
 | `MCP_STATELESS` | Stateless MCP mode (avoids `session not found`) | `true` |
 | `MCP_SESSION_TTL` | MCP session idle timeout | `10m` |
 | `LOG_DIR` | File log directory (empty = stdout only) | (empty) |
+| `cache_enabled` | Enable search response cache (toggle in Settings) | `true` |
+| `cache_ttl_seconds` | Cache entry TTL in seconds | `43200` (12h) |
 
 ---
 
