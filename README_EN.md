@@ -1,139 +1,172 @@
-# Tavily Proxy & Management Dashboard
+# Tavily Proxy Pool & MCP Endpoint
 
-简体中文 | English
+[简体中文](./README.md) | English
 
-A transparent reverse proxy for the Tavily API that aggregates multiple Tavily API Keys into a single **Master Key**. It features a built-in Web UI for managing keys, monitoring usage, and inspecting request logs.
+A reverse proxy for the Tavily API designed for **multi-agent shared Tavily key pools** — deploy once, let N AI agents share M Tavily keys with automatic rotation and failover.
 
 ---
 
-## 🚀 Features
+## ✨ Core Features
 
-- **Transparent Proxy**: Seamlessly forwards requests to `https://api.tavily.com` (supports all endpoints/methods).
-- **Master Key Authentication**: Secure access via `Authorization: Bearer <MasterKey>`.
-- **Intelligent Key Pooling**:
+- **6 MCP tools** (HTTP MCP endpoint, compatible with Claude Code / OpenClaw / Cursor / Cline / Continue):
+  - `tavily-search` — real-time web search
+  - `tavily-extract` — clean content extraction from URLs
+  - `tavily-crawl` — full-site crawling
+  - `tavily-map` — site structure mapping
+  - `tavily-research` — deep research reports (async, internal polling)
+  - `tavily-usage` — quota usage (local aggregation, zero credits)
+- **Transparent proxy**: forwards all paths and methods to `https://api.tavily.com`.
+- **Master Key authentication**: `Authorization: Bearer <MasterKey>`.
+- **Intelligent key pool**:
   - Prioritizes keys with the highest remaining quota.
-  - Randomly distributes requests among keys with equal quota to prevent rate limiting.
-- **Automatic Failover**: Automatically retries with the next available key upon receiving `401`, `429`, `432`, or `433` errors.
-- **MCP Support**: Built-in HTTP MCP (Model Context Protocol) endpoint for easy integration with AI tools (e.g., Claude, VS Code).
-- **Comprehensive Dashboard**:
-  - **Key Management**: Add, delete, and sync quotas for multiple Tavily keys.
-  - **Usage Statistics**: Visualized charts for request volume and quota consumption.
-  - **Request Logs**: Detailed logs with filtering and manual cleanup options.
-- **Automated Tasks**: Monthly quota resets and periodic log cleaning.
-- **Self-Contained**: Single binary deployment with embedded Web UI (Vite + Vue 3 + Naive UI).
+  - Random tie-breaking to avoid rate limiting.
+  - Automatic failover on `401` / `429` / `432` / `433`.
+- **Built-in dashboard** (Vite + Vue 3 + Naive UI):
+  - Key management, usage charts, request logs, monthly auto-reset, log cleanup cron.
+- **Single Go binary**, Docker-ready.
 
 ---
 
-## 🛠️ Requirements
+## 🌟 Recommended Usage: Multi-Agent Shared Key Pool
 
-- **Docker / Docker Compose** (Recommended deployment method, no local environment needed)
-- **Go**: `1.23+` & **Node.js**: `20+` (Only for manual builds)
+The **core use case** of this project — deploy one proxy, share M Tavily keys across N AI agents.
+
+```
+                  ┌─────────────────────────┐
+                  │  TavilyProxyManager     │
+                  │  https://your-host/mcp  │
+                  │                         │
+   ┌──────┐       │  ┌─────────────────┐    │      ┌──────────────┐
+   │Agent1│──┐    │  │   Key Pool      │    │      │              │
+   └──────┘  │    │  │  ┌──────┐       │    │      │              │
+   ┌──────┐  ├────┼─►│  │Key A │─►─┐   │    │      │  api.tavily  │
+   │Agent2│──┤    │  │  ├──────┤   ├►──┼────┼─────►│     .com      │
+   └──────┘  │    │  │  │Key B │─►─┤   │    │      │              │
+   ┌──────┐  │    │  │  ├──────┤   ├►──┘    │      │              │
+   │Agent3│──┘    │  │  │Key C │─►─┘        │      │              │
+   └──────┘       │  │  └──────┘            │      └──────────────┘
+                  │  └─────────────────┘    │
+   ┌──────┐       │                         │
+   │Agent4│───────┤  Single Master Key      │
+   └──────┘       │  Auto-rotate + failover │
+   ┌──────┐       │                         │
+   │Agent5│───────┤                         │
+   └──────┘       └─────────────────────────┘
+```
+
+**Benefits**:
+- ✅ Each agent needs **zero Tavily keys** of its own
+- ✅ One key failing/rate-limited → automatic failover, other agents unaffected
+- ✅ M keys' quota **fairly shared** across N agents (dynamic by remaining quota)
+- ✅ Single auth point: rotate Master Key once, all agents re-auth
+
+**Integration example (Claude Code):**
+```bash
+claude mcp add --transport http tavily-pool \
+  https://your-host/mcp \
+  --header "Authorization: Bearer <MASTER_KEY>"
+```
+
+**Integration example (OpenClaw):**
+```bash
+openclaw mcp set tavily-pool '{"url":"https://your-host/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer <MASTER_KEY>"},"timeout":300}'
+```
 
 ---
 
-## 📦 Quick Deployment (Docker)
+## 🔧 Fork Improvements
 
-Deploy directly using the GHCR image, **no local compilation required**.
+Compared to upstream [xuncv/TavilyProxyManager](https://github.com/xuncv/TavilyProxyManager), this fork adds/fixes:
 
-### 1. Using Docker Compose (Recommended)
+| Improvement | Description |
+|---|---|
+| **➕ `tavily-research` tool** | 6th MCP tool, deep research with async polling (2s interval, 5min cap) |
+| **🔒 Bind to `127.0.0.1:8080`** | Container only listens on loopback by default — no public exposure |
+| **🔒 Master Key not logged in plaintext** | Logs only hint at `/api/settings/master-key`, never print the actual key |
+| **🔒 `register/` directory removed** | Upstream's bulk Tavily key registration script (Tavily TOS risk) — fully deleted here |
+| **🛠 Schema aligned with Tavily real API** | All 6 tools' `inputSchema` enums verified against Tavily API live behaviour (e.g. `output_length: [short, standard, long]`, `citation_format: [numbered, mla, apa, chicago]`, `chunks_per_source: oneOf[1-5, "auto"]`) |
+| **🐛 Candidates shuffle seed fix** | Replaced broken `time-based` seed with `math/rand/v2.Shuffle` (concurrent-safe, auto-seeded) |
+| **🐛 Update() no longer forces `IsActive=false`** | Legal partial updates (quota, alias) no longer soft-disable a key |
+| **🐛 Auto-sync concurrency no longer dead code** | Was hardcoded `concurrency := 1`, now reads `SettingAutoSyncConcurrency` from settings (configurable in dashboard) |
+| **🐛 Research key pinning** | Tavily research tasks are per-key isolated (task created by KEY_A can only be polled by KEY_A). `addResearchTool` now pins the POST key and echoes it on every subsequent poll |
 
-Create a `docker-compose.yml` file:
+---
+
+## 🚀 Quick Deployment (Docker)
+
+### 1. Docker Compose (Recommended)
+
+Create `docker-compose.yml`:
 
 ```yaml
-version: "3.8"
 services:
   tavily-proxy:
-    image: ghcr.io/xuncv/tavilyproxymanager:main
+    image: ghcr.io/one2agi/tavilyproxymanager:main
     container_name: tavily-proxy
+    # ⚠️ Security: bind to loopback only, must pair with nginx/Caddy + HTTPS
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - LISTEN_ADDR=:8080
       - DATABASE_PATH=/app/data/proxy.db
       - TAVILY_BASE_URL=https://api.tavily.com
-      - UPSTREAM_TIMEOUT=30s
+      # ⚠️ At least 100s for research tasks
+      - UPSTREAM_TIMEOUT=100s
     volumes:
       - ./data:/app/data
-      - /etc/localtime:/etc/localtime:ro
+      - /var/log/tavily-proxy:/var/log/tavily-proxy
     restart: unless-stopped
 ```
 
-Start the service:
-
+Start:
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-### 2. Using Docker CLI
+### 2. Local Build (after forking)
 
 ```bash
-docker run -d \
-  --name tavily-proxy \
-  -p 8080:8080 \
-  -v $(pwd)/data:/app/data \
-  -e DATABASE_PATH=/app/data/proxy.db \
-  ghcr.io/xuncv/tavilyproxymanager:main
+git clone https://github.com/one2agi/TavilyProxyManager.git
+cd TavilyProxyManager
+docker build -t tavily-proxy:custom .
+docker compose up -d
 ```
 
 ---
 
 ## 🔑 First Run: Obtaining the Master Key
 
-The service automatically generates a random **Master Key** during its **first startup**. This key is required to log into the dashboard and authenticate API calls.
+A random Master Key is auto-generated on **first startup** (for dashboard login and API auth).
 
-You can retrieve it by checking the container logs:
+**This fork's improvement**: the Master Key is **never printed in plaintext** in startup logs.
 
+Recovery options (pick one):
+
+**Option 1: SQLite query**
 ```bash
-docker logs tavily-proxy 2>&1 | grep "master key"
+sqlite3 ./data/proxy.db "SELECT value FROM settings WHERE key='master_key'"
 ```
 
-**Log Example:**
-`level=INFO msg="no master key found, generated a new one" key=your_generated_master_key_here`
+**Option 2: From the dashboard**
+Visit `http://localhost:8080`, log in with initial credentials, then find the Master Key in Settings.
 
-> **Tip**: It is highly recommended to save this key in a secure location after your first login.
+> ⚠️ **Security tip**: Store the Master Key in 1Password/Bitwarden. Never commit it to git.
 
 ---
 
-## 🛠️ Local Development & Manual Building
-
-If you need to modify the code and build it yourself:
-
-1.  **Start Backend**:
-    ```bash
-    go run ./server
-    ```
-2.  **Start Frontend**:
-    ```bash
-    cd web && npm install && npm run dev
-    ```
-
-**Manual Binary Build**:
-
-- **Windows**: `.\scripts\build_all.ps1`
-- **Linux/macOS**: `./scripts/build_all.sh`
-
-**Build Docker image with Buildx**:
-
-If you use Buildx for the first time, initialize it once:
+## 🛠 Local Development
 
 ```bash
-docker buildx create --use
+# Backend
+go run ./server
+
+# Frontend (separate terminal)
+cd web && npm install && npm run dev
 ```
 
-Build locally (current host architecture):
-
-```bash
-docker buildx build --load -t my-tavily-proxy .
-```
-
-Build and push multi-arch image (`amd64` + `arm64`):
-
-```bash
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/<owner>/<repo>:latest \
-  --push .
-```
+Binary builds:
+- Windows: `.\scripts\build_all.ps1`
+- Linux/macOS: `./scripts/build_all.sh`
 
 ---
 
@@ -141,61 +174,98 @@ docker buildx build \
 
 ### REST API Proxy
 
-Call the proxy exactly as you would the official Tavily API, simply replacing the API base URL and using your **Master Key**:
+Call exactly as you would the official Tavily API — just swap the base URL and use your Master Key:
 
 ```bash
 curl -X POST "http://localhost:8080/search" \
   -H "Authorization: Bearer <MASTER_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "Latest AI trends", "search_depth": "basic"}'
+  -d '{"query": "Latest AI trends", "search_depth": "basic", "max_results": 5}'
 ```
 
-**Compatibility Notes**:
+### The 6 MCP Tools
 
-- Supports `{"api_key": "<MASTER_KEY>"}` or `{"apiKey": "<MASTER_KEY>"}` in JSON bodies.
-- Supports the `api_key=<MASTER_KEY>` GET parameter.
+| Tool | Capability | Key Parameters |
+|---|---|---|
+| `tavily-search` | Real-time web search | `query`, `search_depth`, `topic`, `max_results`, `time_range`, `chunks_per_source` |
+| `tavily-extract` | Extract clean content from URLs | `urls[]`, `extract_depth`, `format` (markdown/text/html_tags), `query` (rerank) |
+| `tavily-crawl` | Crawl an entire site | `url`, `max_depth` (1-5), `max_breadth`, `limit` (≤1000) |
+| `tavily-map` | Map site structure | `url`, `max_depth`, `max_breadth`, `limit` (≤1000) |
+| `tavily-research` | Deep research (async) | `input`, `model` (mini/pro/auto), `output_length`, `citation_format` |
+| `tavily-usage` | Quota usage | (no params, local aggregation) |
 
-### MCP (Model Context Protocol)
+### MCP Integration Examples
 
-The server provides an HTTP MCP endpoint at `http://localhost:8080/mcp`.
+**Claude Code:**
+```bash
+claude mcp add --transport http tavily-pool https://your-host/mcp \
+  --header "Authorization: Bearer <MASTER_KEY>"
+```
 
-Stateless mode is enabled by default (`MCP_STATELESS=true`) to avoid `session not found` errors.
-If you need stateful sessions, set `MCP_STATELESS=false` and ensure your reverse proxy forwards `Mcp-Session-Id` and uses sticky sessions.
-
-#### VS Code Configuration (with mcp-remote)
-
+**Cursor** (`~/.cursor/mcp.json`):
 ```json
 {
-  "servers": {
-    "tavily-proxy": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://localhost:8080/mcp",
-        "--header",
-        "Authorization: Bearer YOUR_MASTER_KEY"
-      ]
+  "mcpServers": {
+    "tavily-pool": {
+      "url": "https://your-host/mcp",
+      "headers": { "Authorization": "Bearer <MASTER_KEY>" }
     }
   }
 }
+```
+
+**OpenClaw** (`openclaw mcp set`):
+```bash
+openclaw mcp set tavily-pool '{"url":"https://your-host/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer <MASTER_KEY>"},"timeout":300}'
 ```
 
 ---
 
 ## ⚙️ Configuration (Environment Variables)
 
-| Variable           | Description              | Default                  |
-| :----------------- | :----------------------- | :----------------------- |
-| `LISTEN_ADDR`      | Server listening address | `:8080`                  |
-| `DATABASE_PATH`    | Path to SQLite database  | `/app/data/proxy.db`     |
-| `TAVILY_BASE_URL`  | Upstream Tavily API URL  | `https://api.tavily.com` |
-| `UPSTREAM_TIMEOUT` | Upstream request timeout | `150s`                   |
-| `MCP_STATELESS`    | Enable stateless MCP mode | `true`                  |
-| `MCP_SESSION_TTL`  | Idle timeout for MCP session | `10m`               |
+| Variable | Description | Default |
+|---|---|---|
+| `LISTEN_ADDR` | Server listen address | `:8080` |
+| `DATABASE_PATH` | SQLite database path | `/app/data/proxy.db` |
+| `TAVILY_BASE_URL` | Upstream Tavily API | `https://api.tavily.com` |
+| `UPSTREAM_TIMEOUT` | Upstream timeout (≥ 100s for research) | `100s` |
+| `MCP_STATELESS` | Stateless MCP mode (avoids `session not found`) | `true` |
+| `MCP_SESSION_TTL` | MCP session idle timeout | `10m` |
+| `LOG_DIR` | File log directory (empty = stdout only) | (empty) |
+
+---
+
+## 🔒 Security Recommendations (Production)
+
+This fork's defaults are hardened, but for production:
+
+1. **Container only binds `127.0.0.1`** — no public exposure
+2. **nginx / Caddy reverse proxy + HTTPS** with Let's Encrypt
+3. **Reverse proxy must forward `Mcp-Session-Id`** (when using stateful MCP)
+4. **Master Key in password manager**, rotated regularly
+5. **fail2ban** to prevent brute-force
+6. **Cloudflare proxy** for DDoS protection (optional)
+7. **Never** put the Master Key in commit history / screenshots / docs
+
+---
+
+## 🆚 vs Upstream
+
+| Feature | Upstream xuncv | This fork |
+|---|---|---|
+| 5 MCP tools | ✅ | ✅ |
+| `tavily-research` tool | ❌ | ✅ |
+| Schema aligned with Tavily API | ❌ (some fields wrong) | ✅ (live-verified) |
+| Candidates shuffle seed | ❌ (time-based) | ✅ (math/rand/v2) |
+| Update() doesn't force-disable | ❌ | ✅ |
+| Auto-sync concurrency configurable | ❌ (dead code 1) | ✅ |
+| Research key pinning | ❌ (per-key 404) | ✅ |
+| Container binds to loopback | ❌ | ✅ |
+| Master Key not logged in plaintext | ❌ | ✅ |
+| `register/` bulk registration | ⚠️ (TOS risk) | ✅ removed |
 
 ---
 
 ## 📄 License
 
-This project is licensed under the MIT License.
+MIT License. Forked from [xuncv/TavilyProxyManager](https://github.com/xuncv/TavilyProxyManager).
