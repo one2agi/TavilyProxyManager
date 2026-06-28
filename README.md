@@ -23,10 +23,14 @@
   - 遇到 `401` / `429` / `432` / `433` 自动 failover 到下一把 Key。
 - **可视化管理面板**(Vite + Vue 3 + Naive UI):
   - Key 管理、用量统计、请求日志、自动化任务(月度重置 + 日志清理)。
+
+![仪表盘](docs/screenshots/dashboard.png)
 - **搜索结果缓存**(SQLite):
   - 对 `POST /search` 响应按 `query + search_depth + topic + max_results + include/exclude_domains` 6 字段 SHA256 缓存。
   - 命中后直接读 DB,**0 credit,响应 ~20ms(对比真实 Tavily ~1-2s,加速 50-100x)**。
   - 适合多 agent 共享场景:同一 query 第二次起自动命中,大幅省 credits。
+
+![搜索缓存设置](docs/screenshots/cache-settings.png)
 - **Go 单文件二进制**,Docker 部署即开即用。
 
 ---

@@ -23,10 +23,14 @@ A reverse proxy for the Tavily API designed for **multi-agent shared Tavily key 
   - Automatic failover on `401` / `429` / `432` / `433`.
 - **Built-in dashboard** (Vite + Vue 3 + Naive UI):
   - Key management, usage charts, request logs, monthly auto-reset, log cleanup cron.
+
+![Dashboard](docs/screenshots/dashboard.png)
 - **Search response cache** (SQLite):
   - Caches `POST /search` responses keyed on SHA256 of 6 fields: `query + search_depth + topic + max_results + include/exclude_domains`.
   - Cache hit → DB read, **0 credits, ~20ms response** (vs ~1-2s real Tavily, 50-100× speedup).
   - Ideal for multi-agent: identical queries from any agent hit cache after the first, slashing Tavily credit usage.
+
+![Cache settings](docs/screenshots/cache-settings.png)
 - **Single Go binary**, Docker-ready.
 
 ---
