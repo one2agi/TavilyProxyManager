@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -357,6 +358,138 @@ func TestTavilyResearch_HandlesUpstreamFailedStatus(t *testing.T) {
 
 func TestTavilyResearch_RespectsClientCancellation(t *testing.T) {
 	t.Skip("client cancellation across MCP transport + httptest is flaky; defer until real-world need arises")
+}
+
+// TestTavilyResearch_StaysOnSameKey guards against a real Tavily behaviour:
+// a research task is bound to the API key that created it; polling with any
+// other key returns 404 "No research task found for this request ID". The
+// proxy must therefore pin the key used for the POST when issuing follow-up
+// polls. Before the KeyIDHint fix, this test would fail because every
+// proxy.Do() call re-shuffled candidates and the poll used a different key.
+func TestTavilyResearch_StaysOnSameKey(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	master := services.NewMasterKeyService(database, logger)
+	if err := master.LoadOrCreate(ctx); err != nil {
+		t.Fatalf("master key: %v", err)
+	}
+	keys := services.NewKeyService(database, logger)
+	if _, err := keys.Create(ctx, "tvly-key-a", "a", 1000); err != nil {
+		t.Fatalf("create key a: %v", err)
+	}
+	if _, err := keys.Create(ctx, "tvly-key-b", "b", 1000); err != nil {
+		t.Fatalf("create key b: %v", err)
+	}
+	stats := services.NewStatsService(database)
+
+	var (
+		mu             sync.Mutex
+		creatingKey    = map[string]string{} // request_id -> bearer token that created it
+		seenPollKeys   []string
+		seenPostKeys   []string
+	)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		bearer := strings.TrimPrefix(auth, "Bearer ")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/research":
+			mu.Lock()
+			seenPostKeys = append(seenPostKeys, bearer)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{
+				"request_id": "task-pin-test",
+				"status": "pending",
+				"input": "test",
+				"model": "mini"
+			}`))
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/research/"):
+			mu.Lock()
+			seenPollKeys = append(seenPollKeys, bearer)
+			// Lazily record the creator the first time we see this task.
+			// Since upstream receives the same task id every poll, we capture
+			// the first poll's bearer as the creator reference.
+			if _, ok := creatingKey["task-pin-test"]; !ok {
+				creatingKey["task-pin-test"] = bearer
+			}
+			mu.Unlock()
+			// Per-key isolation: 404 if the polling key differs from creator.
+			if creatingKey["task-pin-test"] != bearer {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"detail":"No research task found for this request ID"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{
+				"request_id": "task-pin-test",
+				"status": "completed",
+				"content": "pinned key report",
+				"sources": []
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := services.NewTavilyProxy(upstream.URL, 3*time.Second, keys, nil, stats, logger)
+	handler := NewHandler(Dependencies{
+		MasterKey:  master,
+		Proxy:      proxy,
+		Stats:      stats,
+		Stateless:  true,
+		SessionTTL: time.Minute,
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	session := connectMCPClient(t, server.URL, master.Get())
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "tavily-research",
+		Arguments: map[string]any{"input": "test", "model": "mini"},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool errored (key drift?): %+v", res)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seenPostKeys) != 1 {
+		t.Errorf("expected exactly 1 POST, got %d", len(seenPostKeys))
+	}
+	if len(seenPollKeys) < 1 {
+		t.Fatalf("expected at least 1 poll, got 0")
+	}
+	for i, k := range seenPollKeys {
+		if k != seenPostKeys[0] {
+			t.Errorf("poll #%d used key %q, want %q (creator)", i, k, seenPostKeys[0])
+		}
+	}
+
+	payload := mustStructuredMap(t, res.StructuredContent)
+	if got := payload["status"]; got != "completed" {
+		t.Errorf("status = %v, want completed", got)
+	}
+	if got := payload["content"]; got != "pinned key report" {
+		t.Errorf("content = %v, want 'pinned key report'", got)
+	}
 }
 
 type authRoundTripper struct {
