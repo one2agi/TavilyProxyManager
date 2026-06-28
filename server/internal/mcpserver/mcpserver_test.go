@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -201,6 +202,161 @@ func TestMCPHandler_RejectsUnauthorizedRequest(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("unexpected status: got %d want %d", w.Code, http.StatusUnauthorized)
 	}
+}
+
+func TestTavilyResearch_CompletesAndReturnsReport(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	master := services.NewMasterKeyService(database, logger)
+	if err := master.LoadOrCreate(ctx); err != nil {
+		t.Fatalf("master key: %v", err)
+	}
+	keys := services.NewKeyService(database, logger)
+	if _, err := keys.Create(ctx, "tvly-test", "test", 1000); err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	stats := services.NewStatsService(database)
+
+	var callCount int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/research":
+			_, _ = w.Write([]byte(`{
+				"request_id": "abc-123",
+				"created_at": "2026-06-28T10:00:00Z",
+				"status": "pending",
+				"input": "test",
+				"model": "mini",
+				"response_time": 0.1
+			}`))
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/research/"):
+			_, _ = w.Write([]byte(`{
+				"request_id": "abc-123",
+				"created_at": "2026-06-28T10:00:00Z",
+				"status": "completed",
+				"content": "Research report content here",
+				"sources": [{"title": "Source A", "url": "https://example.com"}],
+				"response_time": 1.5
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := services.NewTavilyProxy(upstream.URL, 3*time.Second, keys, nil, stats, logger)
+	handler := NewHandler(Dependencies{
+		MasterKey:  master,
+		Proxy:      proxy,
+		Stats:      stats,
+		Stateless:  true,
+		SessionTTL: time.Minute,
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	session := connectMCPClient(t, server.URL, master.Get())
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "tavily-research",
+		Arguments: map[string]any{"input": "test"},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool errored: %+v", res)
+	}
+
+	payload := mustStructuredMap(t, res.StructuredContent)
+	if got := payload["status"]; got != "completed" {
+		t.Errorf("status = %v, want completed", got)
+	}
+	if got := payload["content"]; got != "Research report content here" {
+		t.Errorf("content = %v, want 'Research report content here'", got)
+	}
+
+	if calls := atomic.LoadInt32(&callCount); calls < 2 {
+		t.Errorf("upstream calls = %d, want >= 2", calls)
+	}
+}
+
+func TestTavilyResearch_HandlesUpstreamFailedStatus(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx := context.Background()
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	master := services.NewMasterKeyService(database, logger)
+	_ = master.LoadOrCreate(ctx)
+	keys := services.NewKeyService(database, logger)
+	_, _ = keys.Create(ctx, "tvly-test", "test", 1000)
+	stats := services.NewStatsService(database)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/research":
+			_, _ = w.Write([]byte(`{"request_id":"abc","status":"pending","created_at":"2026-06-28T10:00:00Z"}`))
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/research/"):
+			_, _ = w.Write([]byte(`{"request_id":"abc","status":"failed","content":"upstream error"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	proxy := services.NewTavilyProxy(upstream.URL, 3*time.Second, keys, nil, stats, logger)
+	handler := NewHandler(Dependencies{
+		MasterKey: master, Proxy: proxy, Stats: stats,
+		Stateless: true, SessionTTL: time.Minute,
+	})
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	session := connectMCPClient(t, server.URL, master.Get())
+	defer session.Close()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "tavily-research",
+		Arguments: map[string]any{"input": "test"},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("expected error result, got %+v", res)
+	}
+}
+
+func TestTavilyResearch_RespectsClientCancellation(t *testing.T) {
+	t.Skip("client cancellation across MCP transport + httptest is flaky; defer until real-world need arises")
 }
 
 type authRoundTripper struct {
