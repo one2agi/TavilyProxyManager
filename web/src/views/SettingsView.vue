@@ -82,6 +82,14 @@
                   <template #suffix>{{ t("units.minutes") }}</template>
                 </n-input-number>
               </n-form-item>
+              <n-form-item :label="t('settings.autoSync.concurrency')">
+                <n-input-number
+                  v-model:value="autoSync.concurrency"
+                  :min="1"
+                  :max="32"
+                  style="width: 100%"
+                />
+              </n-form-item>
               <n-form-item :label="t('settings.autoSync.perKeyDelay')">
                 <n-input-number
                   v-model:value="autoSync.request_interval_seconds"
@@ -325,6 +333,7 @@ const cacheStatsData = ref<{
 const autoSync = ref<{
   enabled: boolean;
   interval_minutes: number;
+  concurrency: number;
   request_interval_seconds: number;
   last_run_at: string | null;
   last_success_at: string | null;
@@ -332,6 +341,7 @@ const autoSync = ref<{
 }>({
   enabled: false,
   interval_minutes: 60,
+  concurrency: 4,
   request_interval_seconds: 0,
   last_run_at: null,
   last_success_at: null,
@@ -383,6 +393,7 @@ async function loadAutoSync() {
     const { data } = await api.get<{
       enabled: boolean;
       interval_minutes: number;
+      concurrency: number;
       request_interval_seconds: number;
       last_run_at: string | null;
       last_success_at: string | null;
@@ -391,6 +402,7 @@ async function loadAutoSync() {
     autoSync.value = {
       enabled: data.enabled,
       interval_minutes: normalizeAutoSyncIntervalMinutes(data.interval_minutes),
+      concurrency: data.concurrency ?? 4,
       request_interval_seconds: normalizeAutoSyncRequestIntervalSeconds(
         data.request_interval_seconds
       ),
@@ -413,6 +425,7 @@ async function saveAutoSync() {
       interval_minutes: normalizeAutoSyncIntervalMinutes(
         autoSync.value.interval_minutes
       ),
+      concurrency: autoSync.value.concurrency,
       request_interval_seconds: normalizeAutoSyncRequestIntervalSeconds(
         autoSync.value.request_interval_seconds
       ),
