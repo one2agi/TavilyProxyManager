@@ -10,7 +10,7 @@ services:
       - LISTEN_ADDR=:8080
       - DATABASE_PATH=/app/data/proxy.db
       - TAVILY_BASE_URL=https://api.tavily.com
-      - UPSTREAM_TIMEOUT=30s
+      - UPSTREAM_TIMEOUT=100s
     volumes:
       - ./data:/app/data
       # Sync host timezone (Linux): mount host timezone files into container.
