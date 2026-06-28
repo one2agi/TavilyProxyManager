@@ -43,7 +43,7 @@ func (s *MasterKeyService) LoadOrCreate(ctx context.Context) error {
 		if err := s.db.WithContext(ctx).Create(&setting).Error; err != nil {
 			return err
 		}
-		s.logger.Info("generated master key", "master_key", newKey)
+		s.logger.Info("generated master key; retrieve via GET /api/settings/master-key with the master key")
 	}
 
 	s.mu.Lock()
