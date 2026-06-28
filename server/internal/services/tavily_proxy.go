@@ -38,6 +38,13 @@ type ProxyRequest struct {
 	Body        []byte
 	ClientIP    string
 	ContentType string
+
+	// KeyIDHint, if non-zero, instructs the proxy to prefer this key when picking
+	// a candidate. Required for multi-step endpoints (e.g. Tavily research) where
+	// the upstream binds the created task to the key that created it — polling
+	// with a different key yields 404. If the hinted key is invalid or exhausted,
+	// the proxy falls back to the normal candidate pool.
+	KeyIDHint uint
 }
 
 type ProxyResponse struct {
@@ -46,6 +53,11 @@ type ProxyResponse struct {
 	Body            []byte
 	ProxyRequestID  string
 	TavilyRequestID string
+
+	// KeyID is the id of the key actually used to fulfil the request.
+	// Callers performing multi-step workflows should echo this back via
+	// ProxyRequest.KeyIDHint on subsequent calls.
+	KeyID uint
 }
 
 func NewTavilyProxy(baseURL string, timeout time.Duration, keys *KeyService, logs *LogService, stats *StatsService, logger *slog.Logger) *TavilyProxy {
@@ -155,6 +167,24 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 		return ProxyResponse{}, err
 	}
 
+	// If a KeyIDHint was supplied, hoist the hinted key to the front of the
+	// candidate list (when it's still usable). This keeps multi-step workflows
+	// like Tavily research on the same key, since the upstream binds the task
+	// to the creating key. If the hinted key is missing/invalid/exhausted, we
+	// fall back to the normal pool.
+	if req.KeyIDHint != 0 {
+		hinted, hintErr := p.keys.Get(ctx, req.KeyIDHint)
+		if hintErr == nil && hinted != nil && hinted.IsActive && !hinted.IsInvalid && hinted.UsedQuota < hinted.TotalQuota {
+			filtered := candidates[:0]
+			for _, c := range candidates {
+				if c.ID != hinted.ID {
+					filtered = append(filtered, c)
+				}
+			}
+			candidates = append([]models.APIKey{*hinted}, filtered...)
+		}
+	}
+
 	if len(candidates) == 0 {
 		p.logger.Warn("no available keys",
 			"request_id", proxyReqID,
@@ -223,6 +253,7 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			)
 			resp.ProxyRequestID = proxyReqID
 			resp.TavilyRequestID = tavilyReqID
+			resp.KeyID = key.ID
 			lastRateLimitedResp = resp
 			hasRateLimitedResp = true
 			lastRateLimitedKeyID = key.ID
@@ -290,6 +321,7 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 
 		resp.ProxyRequestID = proxyReqID
 		resp.TavilyRequestID = tavilyReqID
+		resp.KeyID = key.ID
 		p.logger.Info("proxy request completed",
 			"request_id", proxyReqID,
 			"key_id", key.ID,

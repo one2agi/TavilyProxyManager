@@ -570,6 +570,11 @@ func addResearchTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.
 			return toolError(fmt.Sprintf("upstream status %d: %s", resp.StatusCode, string(resp.Body))), nil
 		}
 
+		// The research task is bound to the key that created it upstream;
+		// subsequent polls must reuse the same key, otherwise Tavily returns
+		// 404 "No research task found for this request ID".
+		pinnedKeyID := resp.KeyID
+
 		// 2. Extract task_id and initial status
 		var initial struct {
 			RequestID string `json:"request_id"`
@@ -601,10 +606,11 @@ func addResearchTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.
 			}
 
 			getResp, err := proxy.Do(ctx, services.ProxyRequest{
-				Method:   http.MethodGet,
-				Path:     pollPath,
-				Headers:  make(http.Header),
-				ClientIP: "mcp",
+				Method:    http.MethodGet,
+				Path:      pollPath,
+				Headers:   make(http.Header),
+				ClientIP:  "mcp",
+				KeyIDHint: pinnedKeyID,
 			})
 			if err != nil {
 				// Network error: continue polling until deadline

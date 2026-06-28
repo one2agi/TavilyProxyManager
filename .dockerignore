@@ -1,1 +1,15 @@
 register
+.git
+.gitignore
+data
+docs
+scripts
+*.md
+*.log
+*.tmp
+.env
+.env.local
+.DS_Store
+node_modules
+web/node_modules
+web/dist
