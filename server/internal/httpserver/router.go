@@ -453,7 +453,17 @@ func handleGetAutoSync(c *gin.Context, settings *services.SettingsService) {
 		interval = 1
 	}
 
-	concurrency := 1
+	concurrency, err := settings.GetInt(c.Request.Context(), services.SettingAutoSyncConcurrency, services.DefaultAutoSyncConcurrency)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > services.MaxQuotaSyncConcurrency {
+		concurrency = services.MaxQuotaSyncConcurrency
+	}
 
 	requestIntervalSeconds, err := settings.GetInt(c.Request.Context(), services.SettingAutoSyncRequestIntervalSeconds, 0)
 	if err != nil {
@@ -497,6 +507,7 @@ func handleSetAutoSync(c *gin.Context, settings *services.SettingsService) {
 	var body struct {
 		Enabled                *bool `json:"enabled"`
 		IntervalMinutes        *int  `json:"interval_minutes"`
+		Concurrency            *int  `json:"concurrency"`
 		RequestIntervalSeconds *int  `json:"request_interval_seconds"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -504,7 +515,7 @@ func handleSetAutoSync(c *gin.Context, settings *services.SettingsService) {
 		return
 	}
 
-	if body.Enabled == nil && body.IntervalMinutes == nil && body.RequestIntervalSeconds == nil {
+	if body.Enabled == nil && body.IntervalMinutes == nil && body.Concurrency == nil && body.RequestIntervalSeconds == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_fields"})
 		return
 	}
@@ -525,6 +536,16 @@ func handleSetAutoSync(c *gin.Context, settings *services.SettingsService) {
 			return
 		}
 		if err := settings.SetInt(c.Request.Context(), services.SettingAutoSyncRequestIntervalSeconds, *body.RequestIntervalSeconds); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+			return
+		}
+	}
+	if body.Concurrency != nil {
+		if *body.Concurrency < 1 || *body.Concurrency > services.MaxQuotaSyncConcurrency {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_concurrency"})
+			return
+		}
+		if err := settings.SetInt(c.Request.Context(), services.SettingAutoSyncConcurrency, *body.Concurrency); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
 			return
 		}

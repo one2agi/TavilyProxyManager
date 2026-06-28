@@ -6,15 +6,17 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tavily-proxy/server/internal/models"
 )
 
 type QuotaSyncService struct {
-	keys   *KeyService
-	proxy  *TavilyProxy
-	logger *slog.Logger
+	keys            *KeyService
+	proxy           *TavilyProxy
+	logger          *slog.Logger
+	lastConcurrency atomic.Int32
 }
 
 type QuotaSyncItemResult struct {
@@ -35,8 +37,10 @@ type QuotaSyncResult struct {
 	EndedAt   time.Time             `json:"ended_at"`
 }
 
-const defaultQuotaSyncConcurrency = 4
-const maxQuotaSyncConcurrency = 32
+const (
+	DefaultQuotaSyncConcurrency = 4
+	MaxQuotaSyncConcurrency     = 32
+)
 const maxQuotaSyncInterval = 60 * time.Second
 
 func NewQuotaSyncService(keys *KeyService, proxy *TavilyProxy, logger *slog.Logger) *QuotaSyncService {
@@ -56,7 +60,7 @@ func (s *QuotaSyncService) SyncOne(ctx context.Context, id uint) (QuotaSyncItemR
 }
 
 func (s *QuotaSyncService) SyncAll(ctx context.Context) (QuotaSyncResult, error) {
-	return s.SyncAllWithConcurrencyAndInterval(ctx, defaultQuotaSyncConcurrency, 0)
+	return s.SyncAllWithConcurrencyAndInterval(ctx, DefaultQuotaSyncConcurrency, 0)
 }
 
 func (s *QuotaSyncService) SyncAllWithConcurrency(ctx context.Context, concurrency int) (QuotaSyncResult, error) {
@@ -85,11 +89,12 @@ func (s *QuotaSyncService) SyncAllWithConcurrencyAndInterval(ctx context.Context
 	}
 
 	if concurrency <= 0 {
-		concurrency = defaultQuotaSyncConcurrency
+		concurrency = DefaultQuotaSyncConcurrency
 	}
-	if concurrency > maxQuotaSyncConcurrency {
-		concurrency = maxQuotaSyncConcurrency
+	if concurrency > MaxQuotaSyncConcurrency {
+		concurrency = MaxQuotaSyncConcurrency
 	}
+	s.lastConcurrency.Store(int32(concurrency))
 	if concurrency > len(keyItems) {
 		concurrency = len(keyItems)
 	}
@@ -143,6 +148,13 @@ func (s *QuotaSyncService) SyncAllWithConcurrencyAndInterval(ctx context.Context
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					if s.logger != nil {
+						s.logger.Error("quota-sync: panic in worker", "err", r)
+					}
+				}
+			}()
 
 			for j := range jobs {
 				if err := waitForSlot(); err != nil {
@@ -221,4 +233,8 @@ func (s *QuotaSyncService) syncKey(ctx context.Context, key models.APIKey) Quota
 	item.UsedQuota = usage
 	item.TotalQuota = totalQuota
 	return item
+}
+
+func (s *QuotaSyncService) LastSyncConcurrency() int {
+	return int(s.lastConcurrency.Load())
 }
