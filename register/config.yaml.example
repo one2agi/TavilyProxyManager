@@ -1,7 +1,0 @@
-# 支持视觉的大模型
-OPENAI_BASEURL: https://example.com/v1
-OPENAI_API_KEY: key
-OPENAI_MODEL: gemini-3-flash
-
-# 验证码识别模式: "local" 使用本地ONNX模型, "api" 使用视觉API (默认)
-CAPTCHA_MODE: local
