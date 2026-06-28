@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math/rand"
+	mathrand "math/rand/v2"
 	"sort"
 	"time"
 
@@ -166,8 +166,7 @@ func (s *KeyService) Candidates(ctx context.Context) ([]models.APIKey, error) {
 		return scoredKeys[i].remaining > scoredKeys[j].remaining
 	})
 
-	// Shuffle ties for fairness.
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// Shuffle ties for fairness using math/rand/v2 (auto-seeded, concurrent-safe).
 	out := make([]models.APIKey, 0, len(scoredKeys))
 	for i := 0; i < len(scoredKeys); {
 		j := i + 1
@@ -175,7 +174,7 @@ func (s *KeyService) Candidates(ctx context.Context) ([]models.APIKey, error) {
 			j++
 		}
 		group := scoredKeys[i:j]
-		rng.Shuffle(len(group), func(a, b int) { group[a], group[b] = group[b], group[a] })
+		mathrand.Shuffle(len(group), func(a, b int) { group[a], group[b] = group[b], group[a] })
 		for _, item := range group {
 			out = append(out, item.key)
 		}
