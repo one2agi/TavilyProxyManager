@@ -77,7 +77,7 @@ jobs:
           name: Show Docker info
           command: docker --version && docker buildx version
       - run:
-          name: Debug: check GHCR_TOKEN env
+          name: "Debug: check GHCR_TOKEN env"
           command: |
             if [ -z "$GHCR_TOKEN" ]; then
               echo "❌ GHCR_TOKEN is empty or not set"
