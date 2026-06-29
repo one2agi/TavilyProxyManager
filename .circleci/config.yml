@@ -1,36 +1,28 @@
 version: 2.1
 
 # ----------------------------------------------------------------------------
-# TavilyProxyManager — CircleCI Pipeline
+# TavilyProxyManager — CircleCI Pipeline (no orb dependency)
 #
-# 功能：替代 GitHub Actions，完成
-#   1. 前端构建（npm run build）
-#   2. 多架构 Docker 镜像构建 + 推送到 GHCR（ghcr.io/one2agi/tavilyproxymanager）
-#   3. Linux 平台 Go 二进制编译（amd64 + arm64）
-#   4. 发布 GitHub Release（含二进制 + 校验和）
+# 功能：
+#   1. 前端构建 (npm run build)
+#   2. 多架构 Docker 镜像构建 + 推送到 GHCR
+#   3. Linux Go 二进制编译 (amd64 + arm64)
+#   4. 发布 GitHub Release
 #
-# ⚠️  重要限制（CircleCI 免费版）：
-#   - 仅支持 Linux executor
-#   - Windows / macOS 二进制构建需要付费 plan
+# ⚠️  限制（CircleCI 免费版）：
+#   - 仅支持 Linux executor（不支持 Windows/macOS 二进制）
 #
-# 🔑  必需配置：
+# 🔑  必需 Context：
 #   CircleCI → Organization Settings → Contexts
-#   创建名为 "ghcr-push" 的 Context，加入环境变量：
-#     GHCR_TOKEN = GitHub PAT (含 write:packages, read:packages, repo 权限)
+#   创建 Context "ghcr-push"，添加环境变量 GHCR_TOKEN（GitHub PAT，需 write:packages + repo 权限）
 # ----------------------------------------------------------------------------
 
-orbs:
-  docker: circleci/docker@2.4.0
-  go: circleci/go@1.7.0
-  gh: circleci/github@2.4.0
-
 # ----------------------------------------------------------------------------
-# Workflows — 触发器 + 任务编排
+# Workflows
 # ----------------------------------------------------------------------------
 workflows:
   version: 2
 
-  # 工作流 A：每次 push / PR 时构建 Docker 镜像（不发布）
   build:
     jobs:
       - build-web
@@ -38,10 +30,8 @@ workflows:
           requires: [build-web]
           filters:
             branches:
-              ignore:
-                - gh-pages
+              ignore: [gh-pages]
 
-  # 工作流 B：打 v* tag 时发布 Release + 推 Docker 镜像
   release:
     jobs:
       - build-web
@@ -90,7 +80,7 @@ jobs:
             - web/dist
 
 # ----------------------------------------------------------------------------
-# Job 2: 构建多架构 Docker 镜像并推送到 GHCR
+# Job 2: 构建多架构 Docker 镜像并推送 GHCR
 # ----------------------------------------------------------------------------
   build-docker:
     docker:
@@ -103,25 +93,36 @@ jobs:
       - setup_remote_docker:
           version: 20.10.24
           docker_layer_caching: true
-      - docker/check
+      - run:
+          name: Show Docker info
+          command: docker --version && docker buildx version
       - run:
           name: Login to GHCR
           command: |
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u $DOCKERHUB_USERNAME --password-stdin
-      - docker/build_push:
-          image: one2agi/tavilyproxymanager
-          tag: >-
-            ${CIRCLE_SHA1::7},
-            ${CIRCLE_TAG:-latest}
-          registry: ghcr.io
-          dockerfile: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          build_args:
-            - BUILDKIT_INLINE_CACHE=1
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u one2agi --password-stdin
+      - run:
+          name: Create buildx builder
+          command: |
+            docker buildx create --name multiarch --driver docker-container --use || true
+            docker buildx inspect --bootstrap
+      - run:
+          name: Build and push multi-arch image
+          command: |
+            IMAGE="ghcr.io/one2agi/tavilyproxymanager"
+            TAGS="-t ${IMAGE}:latest"
+            if [ -n "${CIRCLE_TAG}" ]; then
+              TAGS="${TAGS} -t ${IMAGE}:${CIRCLE_TAG}"
+            fi
+            TAGS="${TAGS} -t ${IMAGE}:${CIRCLE_SHA1:0:7}"
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --build-arg BUILDKIT_INLINE_CACHE=1 \
+              ${TAGS} \
+              --push \
+              .
 
 # ----------------------------------------------------------------------------
-# Job 3: 构建 Linux 平台的 Go 二进制（amd64 + arm64）
-# 注：CircleCI 免费版不支持 Windows/macOS executor
+# Job 3: 构建 Linux 平台 Go 二进制
 # ----------------------------------------------------------------------------
   build-linux-binaries:
     docker:
@@ -131,8 +132,6 @@ jobs:
       - checkout
       - attach_workspace:
           at: ~/project
-      - go/install:
-          version: "1.23"
       - run:
           name: Build Linux amd64 binary
           command: |
@@ -148,7 +147,7 @@ jobs:
               go build -trimpath -ldflags="-s -w" \
               -o build/tavily-proxy-linux-arm64 ./server
       - run:
-          name: Package binaries
+          name: Package binaries + checksums
           command: |
             mkdir -p release-assets
             tar -C build -czf release-assets/tavily-proxy-linux-amd64.tar.gz tavily-proxy-linux-amd64
@@ -170,17 +169,20 @@ jobs:
       - attach_workspace:
           at: ~/project
       - run:
-          name: Publish to GitHub Releases
+          name: Install GitHub CLI
           command: |
-            # 安装 GitHub CLI（如果未安装）
             if ! command -v gh &> /dev/null; then
-              curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
-                sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
-                sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-              sudo apt update && sudo apt install -y gh
+              apt-get update
+              apt-get install -y curl gnupg
+              curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+              apt-get update
+              apt-get install -y gh
             fi
-            # 登录并发布
+            gh --version
+      - run:
+          name: Publish GitHub Release
+          command: |
             echo "$GHCR_TOKEN" | gh auth login --with-token
             gh release create "${CIRCLE_TAG}" \
               release-assets/*.tar.gz \
