@@ -1,0 +1,190 @@
+version: 2.1
+
+# ----------------------------------------------------------------------------
+# TavilyProxyManager — CircleCI Pipeline
+#
+# 功能：替代 GitHub Actions，完成
+#   1. 前端构建（npm run build）
+#   2. 多架构 Docker 镜像构建 + 推送到 GHCR（ghcr.io/one2agi/tavilyproxymanager）
+#   3. Linux 平台 Go 二进制编译（amd64 + arm64）
+#   4. 发布 GitHub Release（含二进制 + 校验和）
+#
+# ⚠️  重要限制（CircleCI 免费版）：
+#   - 仅支持 Linux executor
+#   - Windows / macOS 二进制构建需要付费 plan
+#
+# 🔑  必需配置：
+#   CircleCI → Organization Settings → Contexts
+#   创建名为 "ghcr-push" 的 Context，加入环境变量：
+#     GHCR_TOKEN = GitHub PAT (含 write:packages, read:packages, repo 权限)
+# ----------------------------------------------------------------------------
+
+orbs:
+  docker: circleci/docker@2.4.0
+  go: circleci/go@1.7.0
+  gh: circleci/github@2.4.0
+
+# ----------------------------------------------------------------------------
+# Workflows — 触发器 + 任务编排
+# ----------------------------------------------------------------------------
+workflows:
+  version: 2
+
+  # 工作流 A：每次 push / PR 时构建 Docker 镜像（不发布）
+  build:
+    jobs:
+      - build-web
+      - build-docker:
+          requires: [build-web]
+          filters:
+            branches:
+              ignore:
+                - gh-pages
+
+  # 工作流 B：打 v* tag 时发布 Release + 推 Docker 镜像
+  release:
+    jobs:
+      - build-web
+      - build-linux-binaries:
+          requires: [build-web]
+      - build-docker:
+          requires: [build-web]
+          context: ghcr-push
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              only: main
+      - publish-release:
+          requires: [build-linux-binaries]
+          context: ghcr-push
+          filters:
+            tags:
+              only: /^v.*/
+
+# ----------------------------------------------------------------------------
+# Job 1: 构建前端
+# ----------------------------------------------------------------------------
+jobs:
+  build-web:
+    docker:
+      - image: cimg/node:20.10
+    working_directory: ~/project/web
+    steps:
+      - checkout
+      - restore_cache:
+          key: v1-deps-{{ checksum "package-lock.json" }}
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - save_cache:
+          key: v1-deps-{{ checksum "package-lock.json" }}
+          paths:
+            - node_modules
+      - run:
+          name: Build frontend
+          command: npm run build
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - web/dist
+
+# ----------------------------------------------------------------------------
+# Job 2: 构建多架构 Docker 镜像并推送到 GHCR
+# ----------------------------------------------------------------------------
+  build-docker:
+    docker:
+      - image: cimg/base:stable
+    resource_class: medium
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/project
+      - setup_remote_docker:
+          version: 20.10.24
+          docker_layer_caching: true
+      - docker/check
+      - run:
+          name: Login to GHCR
+          command: |
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u $DOCKERHUB_USERNAME --password-stdin
+      - docker/build_push:
+          image: one2agi/tavilyproxymanager
+          tag: >-
+            ${CIRCLE_SHA1::7},
+            ${CIRCLE_TAG:-latest}
+          registry: ghcr.io
+          dockerfile: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build_args:
+            - BUILDKIT_INLINE_CACHE=1
+
+# ----------------------------------------------------------------------------
+# Job 3: 构建 Linux 平台的 Go 二进制（amd64 + arm64）
+# 注：CircleCI 免费版不支持 Windows/macOS executor
+# ----------------------------------------------------------------------------
+  build-linux-binaries:
+    docker:
+      - image: cimg/go:1.23
+    working_directory: ~/project
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/project
+      - go/install:
+          version: "1.23"
+      - run:
+          name: Build Linux amd64 binary
+          command: |
+            mkdir -p server/public
+            cp -R web/dist/. server/public/
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+              go build -trimpath -ldflags="-s -w" \
+              -o build/tavily-proxy-linux-amd64 ./server
+      - run:
+          name: Build Linux arm64 binary
+          command: |
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+              go build -trimpath -ldflags="-s -w" \
+              -o build/tavily-proxy-linux-arm64 ./server
+      - run:
+          name: Package binaries
+          command: |
+            mkdir -p release-assets
+            tar -C build -czf release-assets/tavily-proxy-linux-amd64.tar.gz tavily-proxy-linux-amd64
+            tar -C build -czf release-assets/tavily-proxy-linux-arm64.tar.gz tavily-proxy-linux-arm64
+            cd release-assets && sha256sum *.tar.gz > checksums.txt
+            cat checksums.txt
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - release-assets
+
+# ----------------------------------------------------------------------------
+# Job 4: 发布 GitHub Release
+# ----------------------------------------------------------------------------
+  publish-release:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - attach_workspace:
+          at: ~/project
+      - run:
+          name: Publish to GitHub Releases
+          command: |
+            # 安装 GitHub CLI（如果未安装）
+            if ! command -v gh &> /dev/null; then
+              curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | \
+                sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
+                sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt update && sudo apt install -y gh
+            fi
+            # 登录并发布
+            echo "$GHCR_TOKEN" | gh auth login --with-token
+            gh release create "${CIRCLE_TAG}" \
+              release-assets/*.tar.gz \
+              release-assets/checksums.txt \
+              --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
+              --title "Release ${CIRCLE_TAG}" \
+              --generate-notes
