@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   tavily-proxy:
-    image: ghcr.io/xuncv/tavilyproxymanager:latest
+    image: ghcr.io/one2agi/tavilyproxymanager:latest
     pull_policy: always
     ports:
       - "127.0.0.1:8080:8080"

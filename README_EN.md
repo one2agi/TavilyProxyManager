@@ -109,7 +109,7 @@ Create `docker-compose.yml`:
 ```yaml
 services:
   tavily-proxy:
-    image: ghcr.io/one2agi/tavilyproxymanager:main
+    image: ghcr.io/one2agi/tavilyproxymanager:latest
     container_name: tavily-proxy
     # ⚠️ Security: bind to loopback only, must pair with nginx/Caddy + HTTPS
     ports:

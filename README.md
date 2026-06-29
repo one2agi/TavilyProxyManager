@@ -109,7 +109,7 @@ openclaw mcp set tavily-pool '{"url":"https://your-host/mcp","transport":"stream
 ```yaml
 services:
   tavily-proxy:
-    image: ghcr.io/one2agi/tavilyproxymanager:main
+    image: ghcr.io/one2agi/tavilyproxymanager:latest
     container_name: tavily-proxy
     # ⚠️ 安全:只绑回环,必须配合 nginx/Caddy 反代 + HTTPS
     ports:
