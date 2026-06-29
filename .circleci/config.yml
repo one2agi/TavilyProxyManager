@@ -77,6 +77,16 @@ jobs:
           name: Show Docker info
           command: docker --version && docker buildx version
       - run:
+          name: Debug: check GHCR_TOKEN env
+          command: |
+            if [ -z "$GHCR_TOKEN" ]; then
+              echo "❌ GHCR_TOKEN is empty or not set"
+              echo "Available env vars matching GHCR* / TOKEN*:"
+              env | grep -iE "ghcr|token" || echo "(none)"
+              exit 1
+            fi
+            echo "✅ GHCR_TOKEN is set, length=${#GHCR_TOKEN}"
+      - run:
           name: Login to GHCR
           command: |
             echo "$GHCR_TOKEN" | docker login ghcr.io -u one2agi --password-stdin
