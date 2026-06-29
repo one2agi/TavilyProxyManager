@@ -172,16 +172,17 @@ jobs:
       - attach_workspace:
           at: ~/project
       - run:
-          name: Install GitHub CLI
+          name: Install GitHub CLI (binary download)
           command: |
             if ! command -v gh &> /dev/null; then
-              apt-get update
-              apt-get install -y curl gnupg
-              curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
-              apt-get update
-              apt-get install -y gh
+              mkdir -p ~/gh-bin
+              cd ~/gh-bin
+              curl -fsSL -o gh.tar.gz https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz
+              tar -xzf gh.tar.gz
+              mv gh_2.62.0_linux_amd64/bin/gh ~/gh-bin/gh
+              echo 'export PATH="$HOME/gh-bin:$PATH"' >> ~/.bashrc
             fi
+            export PATH="$HOME/gh-bin:$PATH"
             gh --version
       - run:
           name: Publish GitHub Release
