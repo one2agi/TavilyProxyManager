@@ -1,9 +1,6 @@
 name: Build and Push to GHCR
 
-on:
-  push:
-    branches: ["main"]
-    tags: ["v*"]
+on: []  # Disabled: CircleCI (.circleci/config.yml) handles Docker build/push to GHCR. Re-enable if CircleCI unavailable.
 
 env:
   REGISTRY: ghcr.io

@@ -1,12 +1,6 @@
 name: Multi-Platform Build
 
-on:
-  workflow_dispatch:
-  push:
-    branches: ["main"]
-    tags: ["v*"]
-  pull_request:
-    branches: ["main"]
+on: []  # Disabled: migrated to CircleCI (.circleci/config.yml). Re-enable for Windows/macOS binaries or to unblock after billing.
 
 permissions:
   contents: read
