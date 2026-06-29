@@ -1,56 +1,33 @@
 version: 2.1
 
 # ----------------------------------------------------------------------------
-# TavilyProxyManager — CircleCI Pipeline (no orb dependency)
+# TavilyProxyManager — CircleCI Pipeline (minimal: Docker only)
 #
 # 功能：
 #   1. 前端构建 (npm run build)
 #   2. 多架构 Docker 镜像构建 + 推送到 GHCR
-#   3. Linux Go 二进制编译 (amd64 + arm64)
-#   4. 发布 GitHub Release
 #
-# ⚠️  限制（CircleCI 免费版）：
-#   - 仅支持 Linux executor（不支持 Windows/macOS 二进制）
+# 触发时机：
+#   - push 到 main / PR  → 构建并推 :latest 镜像
+#   - 打 v* tag          → 构建并推 :latest + :<tag> 镜像
 #
 # 🔑  必需 Context：
 #   CircleCI → Organization Settings → Contexts
-#   创建 Context "ghcr-push"，添加环境变量 GHCR_TOKEN（GitHub PAT，需 write:packages + repo 权限）
+#   创建 Context "ghcr-push"，添加环境变量 GHCR_TOKEN
+#   （GitHub PAT，需 write:packages 权限）
 # ----------------------------------------------------------------------------
 
-# ----------------------------------------------------------------------------
-# Workflows
-# ----------------------------------------------------------------------------
 workflows:
   version: 2
-
   build:
     jobs:
       - build-web
       - build-docker:
           requires: [build-web]
+          context: ghcr-push
           filters:
             branches:
               ignore: [gh-pages]
-
-  release:
-    jobs:
-      - build-web
-      - build-linux-binaries:
-          requires: [build-web]
-      - build-docker:
-          requires: [build-web]
-          context: ghcr-push
-          filters:
-            tags:
-              only: /^v.*/
-            branches:
-              only: main
-      - publish-release:
-          requires: [build-linux-binaries]
-          context: ghcr-push
-          filters:
-            tags:
-              only: /^v.*/
 
 # ----------------------------------------------------------------------------
 # Job 1: 构建前端
@@ -92,7 +69,7 @@ jobs:
     steps:
       - checkout
       - attach_workspace:
-          at: ~/project
+          at: .
       - setup_remote_docker:
           version: 20.10.24
           docker_layer_caching: true
@@ -123,74 +100,3 @@ jobs:
               ${TAGS} \
               --push \
               .
-
-# ----------------------------------------------------------------------------
-# Job 3: 构建 Linux 平台 Go 二进制
-# ----------------------------------------------------------------------------
-  build-linux-binaries:
-    docker:
-      - image: cimg/go:1.23
-    working_directory: ~/project
-    steps:
-      - checkout
-      - attach_workspace:
-          at: ~/project
-      - run:
-          name: Build Linux amd64 binary
-          command: |
-            mkdir -p server/public
-            cp -R web/dist/. server/public/
-            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-              go build -trimpath -ldflags="-s -w" \
-              -o build/tavily-proxy-linux-amd64 ./server
-      - run:
-          name: Build Linux arm64 binary
-          command: |
-            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-              go build -trimpath -ldflags="-s -w" \
-              -o build/tavily-proxy-linux-arm64 ./server
-      - run:
-          name: Package binaries + checksums
-          command: |
-            mkdir -p release-assets
-            tar -C build -czf release-assets/tavily-proxy-linux-amd64.tar.gz tavily-proxy-linux-amd64
-            tar -C build -czf release-assets/tavily-proxy-linux-arm64.tar.gz tavily-proxy-linux-arm64
-            cd release-assets && sha256sum *.tar.gz > checksums.txt
-            cat checksums.txt
-      - persist_to_workspace:
-          root: ~/project
-          paths:
-            - release-assets
-
-# ----------------------------------------------------------------------------
-# Job 4: 发布 GitHub Release
-# ----------------------------------------------------------------------------
-  publish-release:
-    docker:
-      - image: cimg/base:stable
-    steps:
-      - attach_workspace:
-          at: ~/project
-      - run:
-          name: Install GitHub CLI (binary download)
-          command: |
-            if ! command -v gh &> /dev/null; then
-              mkdir -p ~/gh-bin
-              cd ~/gh-bin
-              curl -fsSL -o gh.tar.gz https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz
-              tar -xzf gh.tar.gz
-              mv gh_2.62.0_linux_amd64/bin/gh ~/gh-bin/gh
-              echo 'export PATH="$HOME/gh-bin:$PATH"' >> ~/.bashrc
-            fi
-            export PATH="$HOME/gh-bin:$PATH"
-            gh --version
-      - run:
-          name: Publish GitHub Release
-          command: |
-            echo "$GHCR_TOKEN" | gh auth login --with-token
-            gh release create "${CIRCLE_TAG}" \
-              release-assets/*.tar.gz \
-              release-assets/checksums.txt \
-              --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" \
-              --title "Release ${CIRCLE_TAG}" \
-              --generate-notes
