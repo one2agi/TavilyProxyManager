@@ -59,23 +59,26 @@ jobs:
   build-web:
     docker:
       - image: cimg/node:20.10
-    working_directory: ~/project/web
     steps:
       - checkout
       - restore_cache:
-          key: v1-deps-{{ checksum "package-lock.json" }}
+          key: v1-deps-{{ checksum "web/package-lock.json" }}
+          paths:
+            - web/node_modules
       - run:
           name: Install dependencies
           command: npm ci
+          working_directory: web
       - save_cache:
-          key: v1-deps-{{ checksum "package-lock.json" }}
+          key: v1-deps-{{ checksum "web/package-lock.json" }}
           paths:
-            - node_modules
+            - web/node_modules
       - run:
           name: Build frontend
           command: npm run build
+          working_directory: web
       - persist_to_workspace:
-          root: ~/project
+          root: .
           paths:
             - web/dist
 
