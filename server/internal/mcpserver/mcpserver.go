@@ -551,7 +551,7 @@ var tavilyCrawlInputSchema = map[string]any{
 
 const (
 	researchPollInterval = 2 * time.Second
-	researchMaxWait      = 5 * time.Minute
+	researchMaxWait      = 6 * time.Minute
 )
 
 func addResearchTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.Tool) {
